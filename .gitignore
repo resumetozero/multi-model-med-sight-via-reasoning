@@ -5,6 +5,7 @@
 # Environment
 .env*
 .venv/
+*.lock
 
 # Python caches
 __pycache__/
