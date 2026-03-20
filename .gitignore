@@ -1,0 +1,36 @@
+# Data
+/data/chestxray_IU
+/data/pdf_files
+
+# Environment
+.env*
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pkl
+.mypy_cache/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs & temp files
+*.log
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# ML model artifacts
+*.pt
+*.pth
+*.bin
+*.ckpt
+
+# Packaging
+*.egg-info
+dist/
+build/

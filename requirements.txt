@@ -1,0 +1,17 @@
+# Core LangChain packages
+langchain>=1.2.13
+langchain-core>=1.2.20
+langchain-community>=0.4.1
+
+# PDF/document processing
+pypdf>=6.9.1
+pymupdf>=1.27.2
+
+# Embeddings & vector search
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
+chromadb>=0.3.27
+
+# Utilities / frontend
+tqdm>=4.67.3
+streamlit>=1.55.0
