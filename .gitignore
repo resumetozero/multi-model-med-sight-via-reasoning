@@ -1,6 +1,8 @@
 # Data
 /data/chestxray_IU
 /data/pdf_files
+data/cache/biomed_embeddings_cache.pkl
+data/cache/rocov2_embeddings.pkl
 
 # Environment
 .env*
