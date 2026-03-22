@@ -1,11 +1,13 @@
-from qdrant_client import QdrantClient, models
-from dotenv import load_dotenv, find_dotenv
+import os
+import sys
+import uuid
 import numpy as np
 import pandas as pd
-import uuid
-import os, sys
 from tqdm import tqdm
+from qdrant_client import QdrantClient, models
+from dotenv import load_dotenv, find_dotenv
 
+# Ensure the system path includes the project root for local imports
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -15,170 +17,136 @@ from data.rocov2_data import load_rocov2_embeddings
 
 load_dotenv(find_dotenv())
 
-# Ensure cache directory exists
-os.makedirs("data/cache", exist_ok=True)
+# --- CONFIGURATION ---
+COLLECTION_NAME = "medical_multimodal"
+CACHE_DIR = "data/cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Longer timeout for cloud uploads
+# Connection with robust timeout for cloud environments
 client = QdrantClient(
     url=os.getenv("QDRANT_URL"),
     api_key=os.getenv("QDRANT_API_KEY"),
     timeout=180
 )
 
-# ---------------------------------------------------
-# 1️⃣ Indiana Chest X-ray Embedding Cache
-# ---------------------------------------------------
+def extract_clinical_metadata(text):
+    """
+    Standardizes unstructured captions into searchable metadata.
+    This bridges the gap between Indiana's structured data and ROCO's short text.
+    """
+    text = text.lower()
+    meta = {"modality": "Other", "anatomy": "General"}
+    
+    # Modality Logic
+    if any(x in text for x in ["ct", "computed tomography"]): meta["modality"] = "CT"
+    elif any(x in text for x in ["x-ray", "radiograph", "radiography"]): meta["modality"] = "X-ray"
+    elif any(x in text for x in ["mri", "magnetic resonance", "nmr"]): meta["modality"] = "MRI"
+    elif any(x in text for x in ["ultrasound", "us ", "sonography", "echo"]): meta["modality"] = "Ultrasound"
+    
+    # Anatomy Logic
+    if any(x in text for x in ["chest", "lung", "pleural", "thorax", "rib", "heart"]): meta["anatomy"] = "Chest"
+    elif any(x in text for x in ["head", "brain", "skull", "cth", "neck"]): meta["anatomy"] = "Head"
+    elif any(x in text for x in ["abdomen", "pelvis", "liver", "renal", "kidney"]): meta["anatomy"] = "Abdomen"
+    elif any(x in text for x in ["bone", "fracture", "spine", "leg", "arm"]): meta["anatomy"] = "Musculoskeletal"
+    
+    return meta
 
-CACHE_FILE = "data/cache/biomed_embeddings_cache.pkl"
+# 1. DATA PREPARATION (Using BiomedCLIP-consistent Embeddings)
+# -----------------------------------------------------------
 
-if os.path.exists(CACHE_FILE):
-    print("Loading Chest X-ray embeddings from cache...")
-    embeddings = pd.read_pickle(CACHE_FILE)
+# Load Indiana (Detailed Reports)
+INDIANA_CACHE = os.path.join(CACHE_DIR, "biomed_embeddings_cache.pkl")
+if os.path.exists(INDIANA_CACHE):
+    print("✓ Loading Indiana embeddings from cache...")
+    indiana_df = pd.read_pickle(INDIANA_CACHE)
 else:
-    print("Generating Chest X-ray embeddings...")
-    data = load_and_process_data()
-    chunks = split_docs(data, chunk_size=800, chunk_overlap=50)
-    embeddings = generate_embeddings(chunks, device="cpu", batch_size=4)
-    embeddings.to_pickle(CACHE_FILE)
-    print(f"Embeddings cached to {CACHE_FILE}")
+    print("! Generating Indiana embeddings (BiomedCLIP)...")
+    raw_data = load_and_process_data()
+    chunks = split_docs(raw_data, chunk_size=800, chunk_overlap=50)
+    indiana_df = generate_embeddings(chunks, device="cpu", batch_size=4)
+    indiana_df.to_pickle(INDIANA_CACHE)
 
-# ---------------------------------------------------
-# 2️⃣ ROCOv2 Embedding Cache
-# ---------------------------------------------------
-
-ROCO_CACHE = "data/cache/rocov2_embeddings.pkl"
-
+# Load ROCOv2 (Captions)
+ROCO_CACHE = os.path.join(CACHE_DIR, "rocov2_embeddings.pkl")
 if os.path.exists(ROCO_CACHE):
-    print("Loading ROCOv2 embeddings from cache...")
+    print("✓ Loading ROCOv2 embeddings from cache...")
     roco_data = pd.read_pickle(ROCO_CACHE)
 else:
-    print("Generating ROCOv2 embeddings (first run only)...")
+    print("! Generating ROCOv2 embeddings (BiomedCLIP)...")
     roco_data = load_rocov2_embeddings(device="cpu", batch_size=8)
     pd.to_pickle(roco_data, ROCO_CACHE)
-    print(f"ROCOv2 embeddings cached to {ROCO_CACHE}")
 
-# ---------------------------------------------------
-# 3️⃣ Chest X-ray Collection
-# ---------------------------------------------------
+# 2. COLLECTION SETUP & INDEXING
+# ------------------------------
 
-chest_collection = "chestxray_reports"
+vector_size = 512  # Standard for BiomedCLIP PubMedBERT-ViT-B16
 
-if client.collection_exists(chest_collection):
-    info = client.get_collection(chest_collection)
-    if info.config.params.vectors.size != 512:
-        print("Vector dimension mismatch. Recreating collection...")
-        client.delete_collection(chest_collection)
-
-if not client.collection_exists(chest_collection):
-    vector_size = len(embeddings.iloc[0]["embedding"])
-
+if not client.collection_exists(COLLECTION_NAME):
+    print(f"Creating unified collection: {COLLECTION_NAME}")
     client.create_collection(
-        collection_name=chest_collection,
-        vectors_config=models.VectorParams(
-            size=vector_size,
-            distance=models.Distance.COSINE
-        )
+        collection_name=COLLECTION_NAME,
+        vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE)
     )
+    
+    # CRITICAL: Create Payload Indexes for fast medical filtering
+    print("Creating payload indexes for modality and anatomy...")
+    client.create_payload_index(COLLECTION_NAME, "modality", models.PayloadSchemaType.KEYWORD)
+    client.create_payload_index(COLLECTION_NAME, "anatomy", models.PayloadSchemaType.KEYWORD)
+    client.create_payload_index(COLLECTION_NAME, "dataset", models.PayloadSchemaType.KEYWORD)
 
-# Smaller batch avoids timeout
-batch_size = 32
+# 3. UNIFIED INGESTION ENGINE
+# ---------------------------
 
-points = []
-
-for _, row in tqdm(embeddings.iterrows(), total=len(embeddings), desc="Uploading Chest X-ray"):
-
-    vector = np.asarray(row["embedding"], dtype=np.float32).flatten()
-
-    if np.isnan(vector).any():
-        continue
-
-    points.append(
-        models.PointStruct(
+def ingest_data():
+    all_points = []
+    
+    # Process Indiana Points
+    for _, row in tqdm(indiana_df.iterrows(), total=len(indiana_df), desc="Processing Indiana"):
+        vec = np.asarray(row["embedding"], dtype=np.float32).flatten().tolist()
+        if np.isnan(vec).any(): continue
+        
+        all_points.append(models.PointStruct(
             id=str(uuid.uuid4()),
-            vector=vector.tolist(),
+            vector=vec,
             payload={
                 "dataset": "indiana",
                 "text": row["text"],
-                "image": row["image_path"]
-                # "image_id": None,
-                # "uid": str(row["uid"])
+                "image_ref": row["image_path"],
+                "image_type": "local_path",
+                "modality": "X-ray",
+                "anatomy": "Chest",
+                "findings": row.get("pathology", "unspecified")
             }
-        )
-    )
+        ))
 
-    if len(points) >= batch_size:
-        client.upsert(
-            collection_name=chest_collection,
-            points=points,
-            wait=False
-        )
-        points = []
-
-# Final batch
-if points:
-    client.upsert(
-        collection_name=chest_collection,
-        points=points,
-        wait=True
-    )
-
-print(f"Successfully indexed {len(embeddings)} Chest X-ray chunks")
-
-# ---------------------------------------------------
-# 4️⃣ ROCOv2 Collection
-# ---------------------------------------------------
-
-roco_collection = "rocov2_captions"
-
-if not client.collection_exists(roco_collection):
-
-    vector_size = len(roco_data["embeddings"][0])
-
-    client.create_collection(
-        collection_name=roco_collection,
-        vectors_config=models.VectorParams(
-            size=vector_size,
-            distance=models.Distance.COSINE
-        )
-    )
-
-points = []
-batch_size = 64
-
-for idx, emb in tqdm(enumerate(roco_data["embeddings"]),
-                     total=len(roco_data["embeddings"]),
-                     desc="Uploading ROCOv2"):
-
-    vector = emb.tolist() if isinstance(emb, np.ndarray) else emb
-
-    points.append(
-        models.PointStruct(
-            id=idx,
-            vector=vector,
+    # Process ROCOv2 Points
+    for i in range(len(roco_data["embeddings"])):
+        caption = roco_data["captions"][i]
+        meta = extract_clinical_metadata(caption)
+        vec = roco_data["embeddings"][i].tolist()
+        
+        all_points.append(models.PointStruct(
+            id=str(uuid.uuid4()),
+            vector=vec,
             payload={
                 "dataset": "rocov2",
-                "text": roco_data["captions"][idx],
-                "image": str(roco_data["image_ids"][idx])
-                # "image_path": None,
-                # "uid": None
+                "text": caption,
+                "image_ref": str(roco_data["image_ids"][i]),
+                "image_type": "huggingface_id",
+                "modality": meta["modality"],
+                "anatomy": meta["anatomy"],
+                "findings": "unspecified"
             }
-        )
-    )
+        ))
 
-    if len(points) >= batch_size:
-        client.upsert(
-            collection_name=roco_collection,
-            points=points,
-            wait=False
-        )
-        points = []
+    # Batch Upload
+    batch_size = 100
+    for i in tqdm(range(0, len(all_points), batch_size), desc="Uploading to Qdrant"):
+        batch = all_points[i : i + batch_size]
+        client.upsert(collection_name=COLLECTION_NAME, points=batch)
 
-# Final batch
-if points:
-    client.upsert(
-        collection_name=roco_collection,
-        points=points,
-        wait=True
-    )
-
-print(f"Successfully indexed {len(roco_data['embeddings'])} ROCOv2 captions")
+if __name__ == "__main__":
+    ingest_data()
+    print("\n✅ Unified Medical Vector DB Ready.")
+    # print(f"Collection: {COLLECTION_NAME}")
+    print("Metadata Searchable via: dataset, modality, anatomy, findings")

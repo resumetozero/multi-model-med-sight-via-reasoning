@@ -1,67 +1,66 @@
 from datasets import load_dataset
-from transformers import CLIPProcessor, CLIPModel
 import torch
+import open_clip
 import numpy as np
 from tqdm import tqdm
+from PIL import Image
 
+def get_clinical_metadata(text):
+    """Dynamic metadata extraction to overcome lack of structure in ROCOv2."""
+    text = text.lower()
+    meta = {"modality": "Other", "anatomy": "General"}
+    
+    # Modality detection
+    if any(x in text for x in ["ct", "computed tomography"]): meta["modality"] = "CT"
+    elif any(x in text for x in ["x-ray", "radiograph", "chest unit"]): meta["modality"] = "X-ray"
+    elif any(x in text for x in ["mri", "magnetic resonance"]): meta["modality"] = "MRI"
+    elif any(x in text for x in ["ultrasound", "us ", "sonography"]): meta["modality"] = "Ultrasound"
+    
+    # Anatomy detection
+    if any(x in text for x in ["chest", "lung", "pleural", "thorax"]): meta["anatomy"] = "Chest"
+    elif any(x in text for x in ["head", "brain", "skull", "cth"]): meta["anatomy"] = "Head"
+    elif any(x in text for x in ["abdomen", "pelvis", "liver", "renal"]): meta["anatomy"] = "Abdomen"
+    elif any(x in text for x in ["bone", "fracture", "arm", "leg", "spine"]): meta["anatomy"] = "Musculoskeletal"
+    
+    return meta
 
-def load_rocov2_embeddings(device="cpu", batch_size=32):
-
+def load_rocov2_embeddings(device="cpu", batch_size=8):
     ds = load_dataset("eltorio/ROCOv2-radiology", split="train")
-
     device = torch.device(device)
 
-    model = CLIPModel.from_pretrained(
-        "openai/clip-vit-base-patch32"
-    ).to(device)
-
-    model.eval()
-
-    processor = CLIPProcessor.from_pretrained(
-        "openai/clip-vit-base-patch32"
+    # Use BiomedCLIP to match the Indiana pipeline
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        'hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224'
     )
+    tokenizer = open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+    model.to(device).eval()
 
-    embeddings = []
-    captions = []
-    image_ids = []
+    results = {"embeddings": [], "captions": [], "image_ids": [], "metadata": []}
 
-    for batch in tqdm(
-        ds.iter(batch_size=batch_size),
-        desc="Encoding ROCOv2"
-    ):
+    for batch in tqdm(ds.iter(batch_size=batch_size), desc="Encoding ROCOv2 (BiomedCLIP)"):
+        captions = batch["caption"]
+        # Normalize text style by adding a medical context prefix
+        processed_texts = [f"Medical imaging showing: {c}" for c in captions]
+        text_tokens = tokenizer(processed_texts).to(device)
 
-        batch_captions = batch["caption"]
-        batch_images = [img.convert("RGB") for img in batch["image"]]
-
-        inputs = processor(
-            text=batch_captions,
-            images=batch_images,
-            return_tensors="pt",
-            padding=True,
-            truncation=True
-        )
-
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        images = [img.convert("RGB") for img in batch["image"]]
+        image_tensors = torch.stack([preprocess(img) for img in images]).to(device)
 
         with torch.no_grad():
-
-            outputs = model(**inputs)
-
-            text_features = outputs.text_embeds
-            image_features = outputs.image_embeds
-
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-
+            text_features = model.encode_text(text_tokens)
+            image_features = model.encode_image(image_tensors)
+            
+            # Normalize
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+            
+            # Late Fusion
             combined = (text_features + image_features) / 2
-            combined = combined / combined.norm(dim=-1, keepdim=True)
+            combined /= combined.norm(dim=-1, keepdim=True)
 
-        embeddings.extend(combined.cpu().numpy())
-        captions.extend(batch_captions)
-        image_ids.extend(batch["image_id"])
+        results["embeddings"].extend(combined.cpu().numpy())
+        results["captions"].extend(captions)
+        results["image_ids"].extend(batch["image_id"])
+        results["metadata"].extend([get_clinical_metadata(c) for c in captions])
 
-    return {
-        "embeddings": embeddings,
-        "captions": captions,
-        "image_ids": image_ids
-    }
+    return results

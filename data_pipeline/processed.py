@@ -34,33 +34,40 @@ def load_and_process_data():
 
     # Clean missing values
     df_final = frontal_only.dropna(subset=['findings', 'indication']).copy()
-    df_final['text'] = df_final['indication'].fillna('') + ". " + df_final['findings'].fillna('')
+    # df_final['text'] = df_final['indication'].fillna('') + ". " + df_final['findings'].fillna('')
+    df_final['text'] = (
+        "Indication: " + df_final['indication'].fillna('N/A') + 
+        ". Findings: " + df_final['findings'].fillna('') + 
+        ". Impression: " + df_final['impression'].fillna('')
+    )
 
     print(f"Dataset ready! Total valid cases: {len(df_final)}")
     return df_final
 
 def split_docs(df, chunk_size=800, chunk_overlap=100):
-    """
-    Convert dataframe text into langchain Documents and split into chunks.
-    """
     docs = [
         Document(
-            page_content=text,
-            metadata={"uid": uid, "image_path": img_path}
+            page_content=row['text'],
+            metadata={
+                "uid": row['uid'], 
+                "image_path": row['image_path'],
+                "modality": "X-ray",
+                "anatomy": "Chest",
+                "pathology": str(row['MeSH'])
+            }
         )
-        for text, uid, img_path in zip(df['text'], df['uid'], df['image_path'])
+        for _, row in df.iterrows()
     ]
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", " ", ". ", "; "],
-        length_function=len
-    )
-
-    chunks = text_splitter.split_documents(docs)
-    print(f"Split {len(docs)} documents into {len(chunks)} chunks.")
-    return chunks
+    # text_splitter = RecursiveCharacterTextSplitter(
+    #     chunk_size=chunk_size,
+    #     chunk_overlap=chunk_overlap,
+    #     separators=["\n\n", "\n", " ", ". ", "; "],
+    #     length_function=len
+    # )
+    # return text_splitter.split_documents(docs)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    return text_splitter.split_documents(docs)
 
 def generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224", batch_size=8):
     """
@@ -78,7 +85,7 @@ def generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/
                 # Note: CLIP text model produces 512-dim vectors
                 txt_emb = np.array(hf_client.feature_extraction(
                     text, 
-                    model="openai/clip-vit-base-patch32"
+                    model="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
                 ))
 
                 # 2. Get Image Embedding
@@ -88,7 +95,7 @@ def generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/
                 
                 img_emb = np.array(hf_client.feature_extraction(
                     img_bytes, 
-                    model="openai/clip-vit-base-patch32"
+                    model="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
                 ))
 
                 # 3. Combine Embeddings (Late Fusion)
@@ -105,20 +112,18 @@ def generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/
             image_paths.append(img_path)
 
     else:
-        # model = SentenceTransformer(embedding_model, device=device)
         model, _, preprocess = open_clip.create_model_and_transforms(
-            'hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224'
-        )
+                'hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224'
+            )
         tokenizer = open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
         
         device = torch.device(device)
-        model.to(device)
-        model.eval()
+        model.to(device).eval()
 
-        for i in tqdm(range(0, len(chunks), batch_size), desc="Generating BiomedCLIP embeddings"):
+        processed_data = []
+
+        for i in tqdm(range(0, len(chunks), batch_size), desc="BiomedCLIP Processing"):
             batch = chunks[i:i+batch_size]
-
-            # --- Prepare Text ---
             batch_texts = [doc.page_content for doc in batch]
             text_tokens = tokenizer(batch_texts).to(device)
 
@@ -126,52 +131,38 @@ def generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/
                 text_features = model.encode_text(text_tokens)
                 text_features /= text_features.norm(dim=-1, keepdim=True)
 
-            # --- Prepare Images ---
-            batch_imgs_tensors = []
+            batch_imgs = []
             valid_mask = []
-            
             for doc in batch:
                 try:
                     img = Image.open(doc.metadata["image_path"]).convert("RGB")
-                    # Preprocess applies the specific 224x224 resize and normalization
-                    batch_imgs_tensors.append(preprocess(img))
+                    batch_imgs.append(preprocess(img))
                     valid_mask.append(True)
-                except Exception as e:
+                except:
                     valid_mask.append(False)
 
-            # Create final batch embedding container
-            final_batch_embs = text_features.clone()
-
+            final_embs = text_features.clone()
             if any(valid_mask):
-                image_stack = torch.stack(batch_imgs_tensors).to(device)
+                img_stack = torch.stack(batch_imgs).to(device)
                 with torch.no_grad():
-                    image_features = model.encode_image(image_stack)
-                    image_features /= image_features.norm(dim=-1, keepdim=True)
-
-                # --- Late Fusion (Average Text + Image) ---
-                img_idx = 0
+                    img_features = model.encode_image(img_stack)
+                    img_features /= img_features.norm(dim=-1, keepdim=True)
+                
+                img_ptr = 0
                 for j in range(len(batch)):
                     if valid_mask[j]:
-                        # Average the two normalized vectors
-                        combined = (text_features[j] + image_features[img_idx]) / 2
-                        # Re-normalize so the result is a unit vector for Qdrant
-                        final_batch_embs[j] = combined / combined.norm(dim=-1)
-                        img_idx += 1
+                        combined = (text_features[j] + img_features[img_ptr]) / 2
+                        final_embs[j] = combined / combined.norm(dim=-1)
+                        img_ptr += 1
 
-            # Move to CPU and store
-            batch_np = final_batch_embs.cpu().numpy()
             for j, doc in enumerate(batch):
-                embeddings.append(batch_np[j])
-                texts.append(doc.page_content)
-                uids.append(doc.metadata["uid"])
-                image_paths.append(doc.metadata["image_path"])
+                processed_data.append({
+                    **doc.metadata,
+                    "text": doc.page_content,
+                    "embedding": final_embs[j].cpu().numpy()
+                })
 
-        return pd.DataFrame({
-            "uid": uids,
-            "text": texts,
-            "image_path": image_paths,
-            "embedding": embeddings
-        })
+        return pd.DataFrame(processed_data)
 
 if __name__ == "__main__":
     df_final = load_and_process_data()
