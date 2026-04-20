@@ -9,11 +9,19 @@ from dotenv import load_dotenv, find_dotenv
 from huggingface_hub import InferenceClient
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+import tiktoken
 
 # Configuration
 USE_HF_API = False
 load_dotenv(find_dotenv())
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
+
+# Initialize the TikToken encoder
+tiktoken_encoding = tiktoken.get_encoding("cl100k_base")
+def tiktoken_length_function(text: str) -> int:
+    return len(tiktoken_encoding.encode(text))
+
+
 
 if USE_HF_API:
     hf_client = InferenceClient(token=HF_API_TOKEN)
@@ -34,7 +42,6 @@ def load_and_process_data():
 
     # Clean missing values
     df_final = frontal_only.dropna(subset=['findings', 'indication']).copy()
-    # df_final['text'] = df_final['indication'].fillna('') + ". " + df_final['findings'].fillna('')
     df_final['text'] = (
         "Indication: " + df_final['indication'].fillna('N/A') + 
         ". Findings: " + df_final['findings'].fillna('') + 
@@ -59,15 +66,16 @@ def split_docs(df, chunk_size=800, chunk_overlap=100):
         for _, row in df.iterrows()
     ]
 
-    # text_splitter = RecursiveCharacterTextSplitter(
-    #     chunk_size=chunk_size,
-    #     chunk_overlap=chunk_overlap,
-    #     separators=["\n\n", "\n", " ", ". ", "; "],
-    #     length_function=len
-    # )
-    # return text_splitter.split_documents(docs)
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ". ",],
+        length_function=tiktoken_length_function
+    )
     return text_splitter.split_documents(docs)
+    
+    # text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    # return text_splitter.split_documents(docs)
 
 def generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224", batch_size=8):
     """
@@ -82,7 +90,7 @@ def generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/
 
             try:
                 # 1. Get Text Embedding (Using CLIP so dimensions match the image)
-                # Note: CLIP text model produces 512-dim vectors
+                # CLIP text model produces 512-dim vectors
                 txt_emb = np.array(hf_client.feature_extraction(
                     text, 
                     model="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
@@ -169,5 +177,5 @@ if __name__ == "__main__":
     chunks = split_docs(df_final, chunk_size=800, chunk_overlap=50)
     
     # Reducing batch_size for stability
-    df_chunks = generate_embeddings(chunks, device="cpu", batch_size=4) 
+    df_chunks = generate_embeddings(chunks, device="cpu", embedding_model="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224", batch_size=4) 
     print(df_chunks.head())

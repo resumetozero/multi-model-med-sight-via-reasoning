@@ -26,5 +26,5 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 # 3. Initialize the Multi-Model Agent
-llm = ChatOpenAI(model="gpt-4-turbo-preview", temperature=0) # Or Gemini/Claude
+llm = ChatOpenAI(model = "gpt-4-turbo-preview", temperature=0) # Or Gemini/Claude
 # Add your local Qdrant retrieval tool here as well

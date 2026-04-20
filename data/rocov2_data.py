@@ -5,24 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from PIL import Image
 
-def get_clinical_metadata(text):
-    """Dynamic metadata extraction to overcome lack of structure in ROCOv2."""
-    text = text.lower()
-    meta = {"modality": "Other", "anatomy": "General"}
-    
-    # Modality detection
-    if any(x in text for x in ["ct", "computed tomography"]): meta["modality"] = "CT"
-    elif any(x in text for x in ["x-ray", "radiograph", "chest unit"]): meta["modality"] = "X-ray"
-    elif any(x in text for x in ["mri", "magnetic resonance"]): meta["modality"] = "MRI"
-    elif any(x in text for x in ["ultrasound", "us ", "sonography"]): meta["modality"] = "Ultrasound"
-    
-    # Anatomy detection
-    if any(x in text for x in ["chest", "lung", "pleural", "thorax"]): meta["anatomy"] = "Chest"
-    elif any(x in text for x in ["head", "brain", "skull", "cth"]): meta["anatomy"] = "Head"
-    elif any(x in text for x in ["abdomen", "pelvis", "liver", "renal"]): meta["anatomy"] = "Abdomen"
-    elif any(x in text for x in ["bone", "fracture", "arm", "leg", "spine"]): meta["anatomy"] = "Musculoskeletal"
-    
-    return meta
+from data.metadata import extract_clinical_metadata as get_clinical_metadata
 
 def load_rocov2_embeddings(device="cpu", batch_size=8):
     ds = load_dataset("eltorio/ROCOv2-radiology", split="train")

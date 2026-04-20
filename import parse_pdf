@@ -1,0 +1,32 @@
+Help on function __init__ in module docling.document_converter:
+
+____iinniitt____(self, allowed_formats: Optional[list[docling.datamodel.base_models.InputFormat]] = None, format_options: Optional[dict[docling.datamodel.base_models.InputFormat, docling.document_converter.FormatOption]] = None) -> None
+    Initialize the converter based on format preferences.
+
+    Args:
+        allowed_formats: List of allowed input formats. By default, any
+            format supported by Docling is allowed.
+        format_options: Dictionary of format-specific options.
+
+    Examples:
+        Create a converter with default settings (all formats allowed):
+
+        >>> converter = DocumentConverter()
+
+        Allow only PDF and DOCX formats:
+
+        >>> from docling.datamodel.base_models import InputFormat
+        >>> converter = DocumentConverter(
+        ...     allowed_formats=[InputFormat.PDF, InputFormat.DOCX]
+        ... )
+
+        Customize pipeline options for PDF:
+
+        >>> from docling.datamodel.pipeline_options import PdfPipelineOptions
+        >>> converter = DocumentConverter(
+        ...     format_options={
+        ...         InputFormat.PDF: PdfFormatOption(
+        ...             pipeline_options=PdfPipelineOptions()
+        ...         ),
+        ...     }
+        ... )
