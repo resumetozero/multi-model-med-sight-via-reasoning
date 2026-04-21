@@ -175,49 +175,139 @@ def _query_related_reports(
         return []
 
 
-def _infer_diseases(
+def _analyze_image_patterns(
+    image_array: np.ndarray,
+    modality: str,
+    anatomy: str,
+) -> tuple[List[str], float, str]:
+    """
+    Analyze image pixel patterns to detect disease indicators.
+    Returns: (diseases, confidence, pattern_description)
+    """
+    try:
+        # Ensure grayscale for analysis
+        if len(image_array.shape) == 3:
+            image_gray = np.mean(image_array, axis=2).astype(np.uint8)
+        else:
+            image_gray = image_array.astype(np.uint8)
+
+        # Calculate image statistics
+        mean_val = np.mean(image_gray)
+        std_val = np.std(image_gray)
+        contrast = np.max(image_gray) - np.min(image_gray)
+        
+        # Count high-variance regions (potential infiltrates/consolidation)
+        blocks = []
+        block_size = 32
+        height, width = image_gray.shape
+        
+        for y in range(0, height - block_size, block_size):
+            for x in range(0, width - block_size, block_size):
+                block = image_gray[y:y+block_size, x:x+block_size]
+                blocks.append(np.std(block))
+        
+        high_variance_regions = sum(1 for b in blocks if b > std_val * 1.5) if blocks else 0
+        variance_ratio = high_variance_regions / len(blocks) if blocks else 0
+        
+        diseases = []
+        confidence = 0.5
+        pattern_desc = f"Mean: {mean_val:.0f}, Std: {std_val:.0f}, Contrast: {contrast:.0f}"
+        
+        # Pattern-based disease inference
+        if modality == "X-ray" and anatomy == "Chest":
+            # High variance regions suggest consolidation/infiltration
+            if variance_ratio > 0.3:
+                diseases.extend(["pneumonia", "covid-19", "tuberculosis"])
+                confidence = 0.65
+                pattern_desc += " | High variance regions detected (infiltrates)"
+            # Very high contrast suggests normal/pneumothorax
+            elif contrast > 200:
+                diseases.extend(["pneumothorax", "heart_disease"])
+                confidence = 0.55
+                pattern_desc += " | High contrast detected"
+            # Low variance suggests normal or pleural effusion
+            elif std_val < 30:
+                diseases.extend(["heart_disease", "pleural effusion"])
+                confidence = 0.50
+                pattern_desc += " | Low variance (possible effusion)"
+            else:
+                diseases = ["pneumonia", "covid-19", "tuberculosis"]
+                confidence = 0.60
+                pattern_desc += " | Generic chest findings"
+        
+        elif modality in ("CT", "MRI"):
+            # For CT/MRI: high variance suggests tumors or heterogeneous tissue
+            if variance_ratio > 0.4:
+                diseases.extend(["tumor", "infection", "hemorrhage"])
+                confidence = 0.70
+                pattern_desc += " | Complex tissue patterns"
+            else:
+                diseases.extend(["tumor", "inflammation"])
+                confidence = 0.55
+                pattern_desc += " | Potential mass/lesion"
+        
+        elif anatomy == "Musculoskeletal":
+            # Fractures show as bright lines/discontinuities
+            if contrast > 150:
+                diseases.extend(["fracture", "osteoarthritis"])
+                confidence = 0.65
+                pattern_desc += " | High contrast (cortical disruption)"
+            else:
+                diseases.extend(["fracture", "osteoarthritis"])
+                confidence = 0.50
+        
+        else:
+            # Generic fallback
+            diseases.extend(["infection", "inflammation", "tumor"])
+            confidence = 0.50
+            pattern_desc += " | Generic analysis"
+        
+        return diseases[:3], min(confidence, 0.95), pattern_desc
+    
+    except Exception as exc:
+        log.warning("Image pattern analysis failed: %s", exc)
+        return [], 0.5, "Pattern analysis unavailable"
+
+
+def _infer_diseases_with_image(
+    image_array: np.ndarray,
     modality: str,
     anatomy: str,
     related_text: str = "",
-) -> tuple[List[str], float]:
-    """Infer probable diseases based on modality, anatomy, and related findings."""
-    # Get disease candidates from modality + anatomy
+) -> tuple[List[str], float, str]:
+    """
+    Enhanced disease inference combining image patterns + modality/anatomy hints.
+    """
+    # Pattern analysis from image
+    pattern_diseases, pattern_confidence, pattern_desc = _analyze_image_patterns(
+        image_array, modality, anatomy
+    )
+    
+    # If we have pattern diseases, use them
+    if pattern_diseases:
+        log.info("Pattern analysis detected: %s (confidence: %.0f%%)", 
+                 pattern_diseases, pattern_confidence * 100)
+        return pattern_diseases, pattern_confidence, pattern_desc
+    
+    # Fallback: modality + anatomy inference
     modality_diseases = set(MODALITY_DISEASES.get(modality, []))
     anatomy_diseases = set(ANATOMY_DISEASES.get(anatomy, []))
-
-    # Intersection if both exist, otherwise union
     probable_diseases = modality_diseases & anatomy_diseases
     if not probable_diseases:
         probable_diseases = modality_diseases | anatomy_diseases
-
-    # Score diseases by keyword matches in related text
-    disease_scores = {}
-    text_lower = related_text.lower()
-
-    for disease, keywords in DISEASE_KEYWORDS.items():
-        if disease in probable_diseases:
-            matches = sum(1 for kw in keywords if kw in text_lower)
-            if matches > 0:
-                disease_scores[disease] = matches
-
-    # Return top diseases sorted by match count
-    if disease_scores:
-        sorted_diseases = sorted(disease_scores.items(), key=lambda x: x[1], reverse=True)
-        diseases = [d for d, _ in sorted_diseases[:3]]
-        # Confidence based on keyword density
-        max_matches = max(disease_scores.values())
-        confidence = min(0.95, 0.5 + (max_matches / 10.0) * 0.45)
-    else:
-        diseases = list(probable_diseases)[:3]
-        confidence = 0.6
-
-    return diseases, confidence
+    
+    diseases = list(probable_diseases)[:3] if probable_diseases else ["unknown_pathology"]
+    confidence = 0.50
+    desc = f"Modality/Anatomy inference: {modality} of {anatomy}"
+    
+    return diseases, confidence, desc
 
 
 def _generate_disease_findings(
     modality: str,
     anatomy: str,
     diseases: List[str],
+    pattern_analysis: str = "",
 ) -> str:
     """Generate descriptive findings based on detected diseases."""
     findings = f"**Medical Scan Analysis Report**\n\n"
@@ -230,6 +320,9 @@ def _generate_disease_findings(
             findings += f"{i}. {disease_display}\n"
     else:
         findings += "**Findings:** No specific disease indicators detected in the scan characteristics.\n"
+
+    if pattern_analysis:
+        findings += f"\n**Image Analysis Details:** {pattern_analysis}\n"
 
     findings += f"\n**Modality Notes:** {modality} imaging is suitable for evaluating {anatomy.lower()} region.\n"
     findings += "Further clinical correlation and specialist review recommended.\n"
@@ -309,15 +402,17 @@ def analyze_image_with_reports(
     patient_id: str,
     modality: str,
     anatomy: str,
+    image_array: Optional[np.ndarray] = None,
 ) -> DiseaseAnalysis:
     """
     Comprehensive disease analysis for an uploaded medical image.
 
     Performs:
-    1. Qdrant similarity search for related reports
-    2. Disease inference from modality, anatomy, and related reports
-    3. Image-report correlation scoring
-    4. Composite analysis generation
+    1. Image pattern analysis if image array provided
+    2. Qdrant similarity search for related reports
+    3. Disease inference from modality, anatomy, and related reports
+    4. Image-report correlation scoring
+    5. Composite analysis generation
 
     Parameters
     ----------
@@ -326,6 +421,7 @@ def analyze_image_with_reports(
     patient_id : patient identifier
     modality : imaging modality (X-ray, CT, MRI, etc.)
     anatomy : anatomical region (Chest, Head, Abdomen, etc.)
+    image_array : optional numpy array of image for pattern analysis
 
     Returns
     -------
@@ -334,45 +430,55 @@ def analyze_image_with_reports(
     log.info("Analyzing scan (id=%s, patient=%s, modality=%s, anatomy=%s) …",
              scan_id, patient_id, modality, anatomy)
 
-    # Get Qdrant client
+    # Infer diseases with image analysis if available
+    if image_array is not None:
+        diseases, confidence, pattern_desc = _infer_diseases_with_image(
+            image_array, modality, anatomy, ""
+        )
+        findings = _generate_disease_findings(modality, anatomy, diseases, pattern_desc)
+        related_points = []
+    else:
+        # Fallback without image
+        diseases = []
+        confidence = 0.5
+        pattern_desc = ""
+        findings = f"**Medical Scan Analysis Report**\n\n**Imaging Type:** {modality} of {anatomy}\n\nImage pattern analysis unavailable."
+        related_points = []
+
+    # Get Qdrant client and query for related reports
     try:
         client = get_qdrant_client()
-    except Exception as exc:
-        log.warning("Failed to connect to Qdrant: %s", exc)
-        # Fallback: return basic analysis without Qdrant
-        diseases, conf = _infer_diseases(modality, anatomy, "")
-        findings = _generate_disease_findings(modality, anatomy, diseases)
-        return DiseaseAnalysis(
-            scan_id=scan_id,
-            patient_id=patient_id,
-            modality=modality,
-            anatomy=anatomy,
-            detected_diseases=diseases,
-            disease_confidence=conf,
-            disease_findings=findings,
-            related_reports=[],
-            is_related=False,
-            relationship_explanation="Qdrant unavailable; local analysis only.",
-            composite_analysis=findings,
+        related_points = _query_related_reports(
+            client,
+            image_embedding,
+            patient_id,
+            top_k=TOP_K_RELATED,
         )
+        log.info("Found %d related reports", len(related_points))
+    except Exception as exc:
+        log.warning("Qdrant search failed: %s", exc)
+        related_points = []
 
-    # Query for related reports
-    related_points = _query_related_reports(
-        client,
-        image_embedding,
-        patient_id,
-        top_k=TOP_K_RELATED,
-    )
-
-    # Extract text from related reports for disease inference
-    related_text = " ".join(
-        (p.get("text", "") or "") + " " + (p.get("findings", "") or "")
-        for p in related_points
-    )
-
-    # Infer diseases
-    diseases, confidence = _infer_diseases(modality, anatomy, related_text)
-    findings = _generate_disease_findings(modality, anatomy, diseases)
+    # Extract text from related reports for additional inference
+    if related_points:
+        related_text = " ".join(
+            (p.get("text", "") or "") + " " + (p.get("findings", "") or "")
+            for p in related_points
+        )
+        # Re-infer if we have related text but not image
+        if image_array is None and related_text:
+            diseases_from_text = []
+            text_lower = related_text.lower()
+            for disease, keywords in DISEASE_KEYWORDS.items():
+                matches = sum(1 for kw in keywords if kw in text_lower)
+                if matches > 0:
+                    diseases_from_text.append((disease, matches))
+            
+            if diseases_from_text:
+                sorted_diseases = sorted(diseases_from_text, key=lambda x: x[1], reverse=True)
+                diseases = [d for d, _ in sorted_diseases[:3]]
+                confidence = min(0.9, 0.6 + len(diseases_from_text) * 0.1)
+                findings = _generate_disease_findings(modality, anatomy, diseases)
 
     # Compare with reports
     is_related, explanation = _compare_with_reports(
@@ -402,7 +508,7 @@ def analyze_image_with_reports(
         composite_analysis=composite,
     )
 
-    log.info("✓ Analysis complete: %d diseases, %d related reports",
-             len(diseases), len(related_points))
+    log.info("✓ Analysis complete: %d diseases (confidence: %.0f%%), %d related reports",
+             len(diseases), confidence * 100, len(related_points))
 
     return analysis

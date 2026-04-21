@@ -450,10 +450,14 @@ def ingest_scan_with_analysis(
             patient_id=patient_id,
             modality=ingestion["modality"],
             anatomy=ingestion["anatomy"],
+            image_array=np.array(image),
         )
 
         analysis_dict = analysis.to_dict()
         analysis_json = analysis.to_json_str()
+        
+        log.info("Analysis result: %d diseases detected, confidence: %.0f%%",
+                 len(analysis.detected_diseases), analysis.disease_confidence * 100)
 
         # Update SQLite with analysis
         try:
@@ -464,7 +468,7 @@ def ingest_scan_with_analysis(
             )
             conn.commit()
             conn.close()
-            log.info("Stored analysis in SQLite for scan %s", ingestion["scan_id"])
+            log.info("✓ Analysis stored in SQLite (size: %d bytes)", len(analysis_json))
         except Exception as exc:
             log.warning("Failed to store analysis in SQLite: %s", exc)
 
@@ -477,11 +481,11 @@ def ingest_scan_with_analysis(
                     payload_diff={"analysis": analysis_json},
                     points=[ingestion["qdrant_id"]],
                 )
-                log.info("Updated Qdrant with analysis for scan %s", ingestion["scan_id"])
+                log.info("✓ Analysis updated in Qdrant (point: %s)", ingestion["qdrant_id"])
             except Exception as exc:
                 log.warning("Failed to update Qdrant with analysis: %s", exc)
 
-        log.info("✓ Disease analysis complete")
+        log.info("✓ Disease analysis complete - found: %s", analysis.detected_diseases)
 
         return {
             "ingestion_result": ingestion,
