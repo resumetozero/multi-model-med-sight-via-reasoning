@@ -46,16 +46,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+
 import numpy as np
 from PIL import Image, ExifTags
 
 # ── Qdrant ────────────────────────────────────────────────────────────────────
 from qdrant_client import QdrantClient, models
+from qdrant_client.models import PointIdsList
+
 
 # ── BiomedCLIP ────────────────────────────────────────────────────────────────
 # Uses the same model as the rest of the pipeline (open_clip / transformers)
 import torch
 import open_clip
+
 
 # ── Project internals ─────────────────────────────────────────────────────────
 from data.database import (
@@ -68,6 +72,7 @@ from data.metadata import extract_scan_metadata
 from data.image_utils import preprocess_medical_image
 from data.qdrant_utils import get_qdrant_client, ensure_collection
 from data.disease_analysis import analyze_image_with_reports
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -350,6 +355,7 @@ def ingest_scan(
                 qclient, vec, scan_id, patient_id,
                 filename, caption, meta["modality"], meta["anatomy"], image_path,
             )
+            
         except Exception as exc:
             log.warning("Qdrant upsert failed (local-only): %s", exc)
 
@@ -413,8 +419,6 @@ def ingest_scan_with_analysis(
         - analysis: DiseaseAnalysis object (diseases, related_reports, composite_analysis)
         - status: "success" if both ingestion and analysis completed
     """
-    # Import here to avoid circular imports
-    from data.disease_analysis import analyze_image_with_reports
     
     # First, ingest the scan normally
     ingestion = ingest_scan(
@@ -476,11 +480,17 @@ def ingest_scan_with_analysis(
         if not skip_qdrant and ingestion.get("qdrant_id"):
             try:
                 qclient = _get_qdrant_client()
-                qclient.update_payload(
+                # qclient.update_payload(
+                #     collection_name=PATIENT_COLLECTION,
+                #     payload_diff={"analysis": analysis_json},
+                #     points=[ingestion["qdrant_id"]],
+                # )
+                qclient.set_payload(
                     collection_name=PATIENT_COLLECTION,
-                    payload_diff={"analysis": analysis_json},
-                    points=[ingestion["qdrant_id"]],
+                    payload={"analysis": analysis_json},
+                    points_selector=[ingestion["qdrant_id"]],
                 )
+
                 log.info("✓ Analysis updated in Qdrant (point: %s)", ingestion["qdrant_id"])
             except Exception as exc:
                 log.warning("Failed to update Qdrant with analysis: %s", exc)
@@ -591,90 +601,3 @@ if __name__ == "__main__":
             skip_qdrant=args.no_qdrant,
         )
         print(f"Result: {res}")
-
-
-def ingest_scans_bulk(
-    image_paths: list[str],
-    patient_id:  str = "anonymous",
-    caption_map: Optional[dict[str, str]] = None,
-    device:      str = "cpu",
-    db_path:     str = DB_PATH,
-    skip_qdrant: bool = False,
-) -> list[dict]:
-    """
-    Ingest multiple scan images.
-
-    Parameters
-    ----------
-    caption_map : optional dict mapping filename → caption string
-    """
-    caption_map = caption_map or {}
-    return [
-        ingest_scan(
-            p,
-            patient_id=patient_id,
-            caption=caption_map.get(Path(p).name, ""),
-            device=device,
-            db_path=db_path,
-            skip_qdrant=skip_qdrant,
-        )
-        for p in image_paths
-    ]
-
-
-def query_local_scans(
-    patient_id: Optional[str] = None,
-    modality:   Optional[str] = None,
-    anatomy:    Optional[str] = None,
-    db_path:    str = DB_PATH,
-) -> list[dict]:
-    """
-    Query the local SQLite store for ingested scans.
-    All filters are optional and ANDed together.
-    """
-    conn   = _get_db(db_path)
-    where  = []
-    params = []
-    if patient_id:
-        where.append("patient_id = ?"); params.append(patient_id)
-    if modality:
-        where.append("modality = ?");   params.append(modality)
-    if anatomy:
-        where.append("anatomy = ?");    params.append(anatomy)
-
-    sql = "SELECT * FROM scans"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY upload_ts DESC"
-
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Med-Sight | Ingest medical scan images (PNG/JPG/JPEG)"
-    )
-    parser.add_argument("images",       nargs="+",           help="Image file path(s)")
-    parser.add_argument("--patient-id", default="anonymous", help="Patient identifier")
-    parser.add_argument("--caption",    default="",          help="Shared caption for all images")
-    parser.add_argument("--device",     default="cpu",       help="Torch device (cpu / cuda)")
-    parser.add_argument("--db",         default=DB_PATH,     help="SQLite DB path")
-    parser.add_argument("--no-qdrant",  action="store_true", help="Skip Qdrant upsert")
-    args = parser.parse_args()
-
-    for img in args.images:
-        res = ingest_scan(
-            img,
-            patient_id=args.patient_id,
-            caption=args.caption,
-            device=args.device,
-            db_path=args.db,
-            skip_qdrant=args.no_qdrant,
-        )
-        print(res)
