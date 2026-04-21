@@ -82,7 +82,16 @@ def initialize_scans_store(conn: sqlite3.Connection) -> None:
             modality      TEXT DEFAULT 'Unknown',
             anatomy       TEXT DEFAULT 'General',
             caption       TEXT,
-            qdrant_id     TEXT
+            qdrant_id     TEXT,
+            analysis      TEXT
         );
     """)
+    
+    # Add analysis column if it doesn't exist (for migrations)
+    try:
+        conn.execute("ALTER TABLE scans ADD COLUMN analysis TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
+    
     conn.commit()

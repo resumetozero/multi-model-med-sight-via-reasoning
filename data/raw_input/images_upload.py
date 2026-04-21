@@ -6,6 +6,10 @@ runs BiomedCLIP vision embeddings, extracts DICOM-style metadata where
 possible, stores records in a local SQLite database, and upserts into
 the shared Qdrant collection as dataset="personal_scan".
 
+Enhanced with disease analysis: queries Qdrant for semantically related
+reports and generates descriptive disease analysis with image-report
+correlation scoring.
+
 Flow
 ----
   Image file(s)  (PNG / JPG / JPEG)
@@ -14,12 +18,18 @@ Flow
       └─► BiomedCLIP ViT-B/16  (512-d vision embedding)
               └─► SQLite  (local personalization store)
               └─► Qdrant  (dataset = "personal_scan")
+              └─► Disease analysis  (infer conditions, find related reports)
 
 Usage
 -----
-  # from Python
-  from images_upload import ingest_scan
+  # Basic ingestion
+  from data.raw_input import ingest_scan
   result = ingest_scan("chest_xray.png", patient_id="P001", caption="PA chest X-ray")
+
+  # With disease analysis
+  from data.raw_input import ingest_scan_with_analysis
+  result = ingest_scan_with_analysis("chest_xray.png", patient_id="P001")
+  print(result["analysis"]["composite_analysis"])
 
   # from CLI
   python images_upload.py scan1.jpg scan2.png --patient-id P001
@@ -57,6 +67,7 @@ from data.database import (
 from data.metadata import extract_scan_metadata
 from data.image_utils import preprocess_medical_image
 from data.qdrant_utils import get_qdrant_client, ensure_collection
+from data.disease_analysis import analyze_image_with_reports
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -240,6 +251,7 @@ def _upsert_scan_to_qdrant(
     modality:   str,
     anatomy:    str,
     image_path: str,
+    analysis_json: str = "",
 ) -> str:
     """Upsert a single scan embedding; returns the Qdrant point ID."""
     point_id = str(uuid.uuid4())
@@ -258,7 +270,8 @@ def _upsert_scan_to_qdrant(
                 "anatomy":    anatomy,
                 "image_ref":  image_path,
                 "image_type": "local_path",
-                "findings":   "unspecified",
+                "findings":   "Analysis pending",
+                "analysis":   analysis_json,
             },
         )],
     )
@@ -267,7 +280,7 @@ def _upsert_scan_to_qdrant(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PUBLIC API
+# PUBLIC API – INGESTION ONLY
 # ─────────────────────────────────────────────────────────────────────────────
 
 def ingest_scan(
@@ -344,11 +357,11 @@ def ingest_scan(
     conn.execute(
         """INSERT INTO scans
            (id, patient_id, filename, file_hash, upload_ts,
-            width, height, color_mode, modality, anatomy, caption, qdrant_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            width, height, color_mode, modality, anatomy, caption, qdrant_id, analysis)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (scan_id, patient_id, filename, fhash, now,
          meta["width"], meta["height"], meta["color_mode"],
-         meta["modality"], meta["anatomy"], caption, qdrant_id),
+         meta["modality"], meta["anatomy"], caption, qdrant_id, ""),
     )
     conn.commit()
     conn.close()
@@ -366,6 +379,214 @@ def ingest_scan(
     }
     log.info("✓ Scan ingested → %s", result)
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC API – INGESTION WITH DISEASE ANALYSIS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ingest_scan_with_analysis(
+    image_path:  str,
+    patient_id:  str = "anonymous",
+    caption:     str = "",
+    device:      str = "cpu",
+    db_path:     str = DB_PATH,
+    skip_qdrant: bool = False,
+) -> dict:
+    """
+    Full pipeline with disease analysis: integrate scan, analyze for diseases,
+    and correlate with patient's existing reports.
+
+    Parameters
+    ----------
+    image_path  : path to PNG / JPG / JPEG scan file
+    patient_id  : patient identifier string
+    caption     : optional free-text description
+    device      : torch device string ("cpu" or "cuda")
+    db_path     : local SQLite personalisation DB path
+    skip_qdrant : if True, skip Qdrant operations
+
+    Returns
+    -------
+    dict containing:
+        - ingestion_result: basic scan metadata (scan_id, filename, modality, anatomy)
+        - analysis: DiseaseAnalysis object (diseases, related_reports, composite_analysis)
+        - status: "success" if both ingestion and analysis completed
+    """
+    # Import here to avoid circular imports
+    from data.disease_analysis import analyze_image_with_reports
+    
+    # First, ingest the scan normally
+    ingestion = ingest_scan(
+        image_path,
+        patient_id=patient_id,
+        caption=caption,
+        device=device,
+        db_path=db_path,
+        skip_qdrant=skip_qdrant,
+    )
+
+    # If ingestion failed or was a duplicate, skip analysis
+    if ingestion.get("status") != "success":
+        return {
+            "ingestion_result": ingestion,
+            "analysis": None,
+            "status": "skipped",
+        }
+
+    # Now perform disease analysis
+    try:
+        image_path_abs = str(Path(image_path).resolve())
+        raw_image = Image.open(image_path_abs)
+        image = preprocess_medical_image(raw_image)
+        
+        # Re-embed for analysis
+        vec = embed_image(image, device=device)
+
+        log.info("Starting disease analysis for scan %s", ingestion["scan_id"])
+        analysis = analyze_image_with_reports(
+            image_embedding=vec,
+            scan_id=ingestion["scan_id"],
+            patient_id=patient_id,
+            modality=ingestion["modality"],
+            anatomy=ingestion["anatomy"],
+        )
+
+        analysis_dict = analysis.to_dict()
+        analysis_json = analysis.to_json_str()
+
+        # Update SQLite with analysis
+        try:
+            conn = _get_db(db_path)
+            conn.execute(
+                "UPDATE scans SET analysis = ? WHERE id = ?",
+                (analysis_json, ingestion["scan_id"])
+            )
+            conn.commit()
+            conn.close()
+            log.info("Stored analysis in SQLite for scan %s", ingestion["scan_id"])
+        except Exception as exc:
+            log.warning("Failed to store analysis in SQLite: %s", exc)
+
+        # Update Qdrant with analysis if we have a qdrant_id
+        if not skip_qdrant and ingestion.get("qdrant_id"):
+            try:
+                qclient = _get_qdrant_client()
+                qclient.update_payload(
+                    collection_name=PATIENT_COLLECTION,
+                    payload_diff={"analysis": analysis_json},
+                    points=[ingestion["qdrant_id"]],
+                )
+                log.info("Updated Qdrant with analysis for scan %s", ingestion["scan_id"])
+            except Exception as exc:
+                log.warning("Failed to update Qdrant with analysis: %s", exc)
+
+        log.info("✓ Disease analysis complete")
+
+        return {
+            "ingestion_result": ingestion,
+            "analysis": analysis_dict,
+            "status": "success",
+        }
+
+    except Exception as exc:
+        log.warning("Disease analysis failed: %s", exc)
+        return {
+            "ingestion_result": ingestion,
+            "analysis": None,
+            "analysis_error": str(exc),
+            "status": "ingestion_success_analysis_failed",
+        }
+
+
+def ingest_scans_bulk(
+    image_paths: list[str],
+    patient_id:  str = "anonymous",
+    caption_map: Optional[dict[str, str]] = None,
+    device:      str = "cpu",
+    db_path:     str = DB_PATH,
+    skip_qdrant: bool = False,
+) -> list[dict]:
+    """
+    Ingest multiple scan images.
+
+    Parameters
+    ----------
+    caption_map : optional dict mapping filename → caption string
+    """
+    caption_map = caption_map or {}
+    return [
+        ingest_scan(
+            p,
+            patient_id=patient_id,
+            caption=caption_map.get(Path(p).name, ""),
+            device=device,
+            db_path=db_path,
+            skip_qdrant=skip_qdrant,
+        )
+        for p in image_paths
+    ]
+
+
+def query_local_scans(
+    patient_id: Optional[str] = None,
+    modality:   Optional[str] = None,
+    anatomy:    Optional[str] = None,
+    db_path:    str = DB_PATH,
+) -> list[dict]:
+    """
+    Query the local SQLite store for ingested scans.
+    All filters are optional and ANDed together.
+    """
+    conn   = _get_db(db_path)
+    where  = []
+    params = []
+    if patient_id:
+        where.append("patient_id = ?"); params.append(patient_id)
+    if modality:
+        where.append("modality = ?");   params.append(modality)
+    if anatomy:
+        where.append("anatomy = ?");    params.append(anatomy)
+
+    sql = "SELECT * FROM scans"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY upload_ts DESC"
+
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Med-Sight | Ingest medical scan images (PNG/JPG/JPEG)"
+    )
+    parser.add_argument("images",       nargs="+",           help="Image file path(s)")
+    parser.add_argument("--patient-id", default="anonymous", help="Patient identifier")
+    parser.add_argument("--caption",    default="",          help="Shared caption for all images")
+    parser.add_argument("--device",     default="cpu",       help="Torch device (cpu / cuda)")
+    parser.add_argument("--db",         default=DB_PATH,     help="SQLite DB path")
+    parser.add_argument("--no-qdrant",  action="store_true", help="Skip Qdrant upsert")
+    parser.add_argument("--with-analysis", action="store_true", help="Include disease analysis")
+    args = parser.parse_args()
+
+    func = ingest_scan_with_analysis if args.with_analysis else ingest_scan
+
+    for img in args.images:
+        res = func(
+            img,
+            patient_id=args.patient_id,
+            caption=args.caption,
+            device=args.device,
+            db_path=args.db,
+            skip_qdrant=args.no_qdrant,
+        )
+        print(f"Result: {res}")
 
 
 def ingest_scans_bulk(

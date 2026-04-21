@@ -186,5 +186,103 @@ uv run mypy .
 - HIPAA-compliant local storage
 - Patient-specific data isolation
 - Secure API key management
-- No external data transmission without explicit consent</content>
+- No external data transmission without explicit consent
+
+## 📦 Dependencies
+
+### Key Libraries
+- **Streamlit 1.55.0+**: Web interface framework
+- **Docling 2.90.0+**: Advanced PDF parsing with OCR
+- **Qdrant Client 1.17.1+**: Vector database client
+- **Open-CLIP-Torch 3.3.0+**: Multimodal embeddings (BiomedCLIP)
+- **PyTorch 2.0+**: Deep learning framework
+- **LangChain 1.2+**: LLM orchestration and chains
+
+### Installation Methods
+
+**Recommended - Using UV:**
+```bash
+uv sync
+```
+
+**Alternative - Using pip with requirements.txt:**
+```bash
+pip install -r requirements.txt
+```
+
+## 🐛 Troubleshooting
+
+### Import Errors
+If you encounter `ModuleNotFoundError`, ensure:
+- You're using `uv run` to execute commands
+- The virtual environment has all dependencies: `uv sync`
+- The project root is in your Python path
+
+### Qdrant Connection Issues
+- Verify Qdrant is running: `docker ps` for local instances
+- Check credentials in `.env` for cloud deployments
+- Ensure firewall allows ports 6333-6334
+
+### PDF Parsing Failures
+- Docling requires system libraries: `apt-get install poppler-utils`
+- Scanned PDFs may require OCR processing (automatic)
+- Large PDFs stream in batches; check available memory
+
+### Database Locked
+- If `*.db-wal` or `*.db-shm` files exist, SQLite is in use
+- Close all open connections: `lsof data/database/medsight_personal.db`
+- Clear stale locks if needed: `rm data/database/*.db-wal data/database/*.db-shm`
+
+## 📝 License
+
+This project supports clinical AI research and HIPAA-compliant medical data processing.
+
+## 📦 Dependencies
+
+### Key Libraries
+- **Streamlit 1.55.0+**: Web interface framework
+- **Docling 2.90.0+**: Advanced PDF parsing with OCR
+- **Qdrant Client 1.17.1+**: Vector database client
+- **Open-CLIP-Torch 3.3.0+**: Multimodal embeddings (BiomedCLIP)
+- **PyTorch 2.0+**: Deep learning framework
+- **LangChain 1.2+**: LLM orchestration and chains
+
+### Installation Methods
+
+**Recommended - Using UV:**
+```bash
+uv sync
+```
+
+**Alternative - Using pip with requirements.txt:**
+```bash
+pip install -r requirements.txt
+```
+
+## 🐛 Troubleshooting
+
+### Import Errors
+If you encounter `ModuleNotFoundError`, ensure:
+- You're using `uv run` to execute commands
+- The virtual environment has all dependencies: `uv sync`
+- The project root is in your Python path
+
+### Qdrant Connection Issues
+- Verify Qdrant is running: `docker ps` for local instances
+- Check credentials in `.env` for cloud deployments
+- Ensure firewall allows ports 6333-6334
+
+### PDF Parsing Failures
+- Docling requires system libraries: `apt-get install poppler-utils`
+- Scanned PDFs may require OCR processing (automatic)
+- Large PDFs stream in batches; check available memory
+
+### Database Locked
+- If `*.db-wal` or `*.db-shm` files exist, SQLite is in use
+- Close all open connections: `lsof data/database/medsight_personal.db`
+- Clear stale locks if needed: `rm data/database/*.db-wal data/database/*.db-shm`
+
+## 📝 License
+
+This project supports clinical AI research and HIPAA-compliant medical data processing.</content>
 <parameter name="filePath">/home/resumetozero/Documents/Projects/BTP/README.md

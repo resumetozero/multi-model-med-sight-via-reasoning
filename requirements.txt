@@ -2,16 +2,34 @@
 langchain>=1.2.13
 langchain-core>=1.2.20
 langchain-community>=0.4.1
+langchain-groq>=1.1.2
+langchain-openai>=1.1.11
+langchain-nvidia-ai-endpoints>=1.2.1
+langchain-text-splitters>=1.1.1
+langgraph>=1.1.2
 
 # PDF/document processing
+Docling>=2.90.0
 pypdf>=6.9.1
 pymupdf>=1.27.2
 
 # Embeddings & vector search
 sentence-transformers>=2.2.2
+open-clip-torch>=3.3.0
 faiss-cpu>=1.7.4
-chromadb>=0.3.27
+qdrant-client>=1.17.1
+
+# Data & ML
+datasets>=4.8.3
+pandas>=2.3.3
+Pillow>=12.1.1
+torch>=2.0.0
+transformers>=4.30.0
+tiktoken>=0.12.0
 
 # Utilities / frontend
 tqdm>=4.67.3
 streamlit>=1.55.0
+python-dotenv>=1.2.2
+huggingface-hub>=1.7.1
+fsspec>=2026.2.0

@@ -1,39 +1,66 @@
 # Data
-/data/chestxray_IU
-/data/pdf_files
-data/cache/biomed_embeddings_cache.pkl
-data/cache/rocov2_embeddings.pkl
+/data/chestxray_IU/
+/data/pdf_files/
+/data/cache/
+/data/raw_input/*.pkl
+data/database/*.db
+data/database/*.db-shm
+data/database/*.db-wal
 
 # Environment
-.env*
+.env
+.env.local
 .venv/
-*.lock
+venv/
+env/
 
 # Python caches
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 *.pkl
 .mypy_cache/
 .pytest_cache/
+.ruff_cache/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
 # Jupyter
 .ipynb_checkpoints/
+*.ipynb
+
+# Streamlit
+.streamlit/
+.streamlit/config.yml
 
 # Logs & temp files
 *.log
 *.tmp
+*.temp
 
 # OS files
 .DS_Store
 Thumbs.db
+.directory
 
 # ML model artifacts
 *.pt
 *.pth
 *.bin
 *.ckpt
+*.safetensors
 
 # Packaging
 *.egg-info
 dist/
 build/
+*.whl
+
+# Application specific
+temp_pdf_*
