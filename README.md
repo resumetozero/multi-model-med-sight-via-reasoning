@@ -1,6 +1,6 @@
-# Med-Sight | Multimodal Medical AI Platform
+# Multi-Model Med-Sight via Reasoning
 
-A comprehensive medical AI platform for processing clinical reports and diagnostic scans using multimodal embeddings and vector search.
+A comprehensive multimodal medical AI platform that leverages advanced reasoning agents to process clinical reports and diagnostic scans using multimodal embeddings and vector search. The system integrates vision, reflection, and routing agents to provide intelligent analysis of medical data with semantic correlation and disease detection.
 
 ## 🚀 Quick Start
 
@@ -122,7 +122,15 @@ results = search_collection("chest pain symptoms", patient_id="patient123")
     └── vision.py
 ```
 
-## 🔧 Configuration
+## 🤖 AI Agents Architecture
+
+The platform employs a multi-agent reasoning system:
+
+- **Vision Agent** (`agents/vision.py`): Processes medical images using BiomedCLIP for feature extraction and initial analysis
+- **Reflector Agent** (`agents/reflector.py`): Performs reflective reasoning on analysis results for deeper insights
+- **Router Agent** (`agents/router.py`): Coordinates between agents and manages workflow orchestration
+
+## 📊 Quantitative Metrics
 
 ### Qdrant Setup
 
@@ -147,10 +155,11 @@ docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 
 1. **File Upload**: PDF reports or medical images
 2. **Preprocessing**: Text extraction, image normalization
-3. **Metadata Extraction**: Clinical information parsing
-4. **Embedding Generation**: BiomedCLIP multimodal embeddings
-5. **Vector Storage**: Qdrant for similarity search
-6. **Local Persistence**: SQLite for patient-specific data
+3. **Metadata Extraction**: Clinical information parsing (modality, anatomy)
+4. **Embedding Generation**: BiomedCLIP multimodal embeddings (512-d vectors)
+5. **Vector Storage**: Qdrant for similarity search and patient correlation
+6. **AI Analysis**: Multi-agent reasoning for disease detection and clinical insights
+7. **Local Persistence**: SQLite for patient-specific data with encryption
 
 ## 🛠️ Development
 
@@ -172,13 +181,16 @@ uv run mypy .
 
 ## 📈 Features
 
-- **Multimodal Processing**: Text + image medical data
+- **Multimodal Processing**: Text + image medical data integration
 - **Patient Privacy**: Local SQLite storage with encryption
 - **Duplicate Detection**: File hash-based deduplication
 - **Clinical Metadata**: Automatic modality/anatomy extraction
 - **Vector Search**: Semantic similarity across medical content
+- **AI Reasoning Agents**: Advanced analysis with reflection and routing
+- **Disease Detection**: Pattern-based disease identification with confidence scoring
 - **Batch Processing**: Efficient bulk ingestion
 - **Web Interface**: User-friendly Streamlit application
+- **Research Integration**: Latest medical research incorporation via web search
 
 ## 🔒 Security & Compliance
 
@@ -196,56 +208,8 @@ uv run mypy .
 - **Qdrant Client 1.17.1+**: Vector database client
 - **Open-CLIP-Torch 3.3.0+**: Multimodal embeddings (BiomedCLIP)
 - **PyTorch 2.0+**: Deep learning framework
-- **LangChain 1.2+**: LLM orchestration and chains
-
-### Installation Methods
-
-**Recommended - Using UV:**
-```bash
-uv sync
-```
-
-**Alternative - Using pip with requirements.txt:**
-```bash
-pip install -r requirements.txt
-```
-
-## 🐛 Troubleshooting
-
-### Import Errors
-If you encounter `ModuleNotFoundError`, ensure:
-- You're using `uv run` to execute commands
-- The virtual environment has all dependencies: `uv sync`
-- The project root is in your Python path
-
-### Qdrant Connection Issues
-- Verify Qdrant is running: `docker ps` for local instances
-- Check credentials in `.env` for cloud deployments
-- Ensure firewall allows ports 6333-6334
-
-### PDF Parsing Failures
-- Docling requires system libraries: `apt-get install poppler-utils`
-- Scanned PDFs may require OCR processing (automatic)
-- Large PDFs stream in batches; check available memory
-
-### Database Locked
-- If `*.db-wal` or `*.db-shm` files exist, SQLite is in use
-- Close all open connections: `lsof data/database/medsight_personal.db`
-- Clear stale locks if needed: `rm data/database/*.db-wal data/database/*.db-shm`
-
-## 📝 License
-
-This project supports clinical AI research and HIPAA-compliant medical data processing.
-
-## 📦 Dependencies
-
-### Key Libraries
-- **Streamlit 1.55.0+**: Web interface framework
-- **Docling 2.90.0+**: Advanced PDF parsing with OCR
-- **Qdrant Client 1.17.1+**: Vector database client
-- **Open-CLIP-Torch 3.3.0+**: Multimodal embeddings (BiomedCLIP)
-- **PyTorch 2.0+**: Deep learning framework
-- **LangChain 1.2+**: LLM orchestration and chains
+- **LangChain 1.2+**: LLM orchestration and agent framework
+- **LangGraph 1.1+**: Multi-agent workflow management
 
 ### Installation Methods
 
